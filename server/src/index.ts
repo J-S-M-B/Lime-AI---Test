@@ -57,13 +57,13 @@ app.post('/api/notes', upload.single('audio'), async (req, res) => {
 
     const note = await prisma.note.create({
       data: {
-        patient: { connect: { id: patient.id } }, // 👈 relación, no patientId
+        patient: { connect: { id: patient.id } },
         audioUrl: `/uploads/${req.file.filename}`,
         transcriptRaw,
         summary,
         oasisG: oasis as any,
         extractionMeta: meta as any
-      } satisfies Prisma.NoteCreateInput,          // 👈 fuerza la rama tipada correcta
+      } satisfies Prisma.NoteCreateInput,
       include: { patient: true }
     });
 
@@ -117,4 +117,15 @@ app.post('/api/debug/transcribe-upload', memUpload.single('audio'), async (req, 
     res.status(500).json({ error: 'debug transcribe failed' });
   }
 });
+
+// server/src/index.ts
+app.get('/api/debug/extract-from-note', async (req, res) => {
+  const id = req.query.id as string;
+  if (!id) return res.status(400).json({ error: 'id required' });
+  const note = await prisma.note.findUnique({ where: { id } });
+  if (!note) return res.status(404).json({ error: 'note not found' });
+  const { oasis, summary, meta } = await extractOasis(note.transcriptRaw);
+  return res.json({ oasis, summary, meta });
+});
+
 
