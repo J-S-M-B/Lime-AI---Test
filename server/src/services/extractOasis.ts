@@ -1,6 +1,7 @@
-import { OasisFeatures, OasisFeaturesSchema } from '../lib/oasisFeatures';
-import { mapToCodes } from '../lib/oasisMapper';
-import { OasisExtraction } from '../lib/oasisSchema';
+import { OasisFeatures } from '../lib/oasisFeatures';
+import { getCodesViaLLM } from '../services/oasisLLM';
+import { reconcileAndFallback } from '../services/osasisReconcile';
+import { summarizeBullets } from '../services/summary';
 
 const OLLAMA_URL = String(process.env.OLLAMA_URL);
 const MODEL = String(process.env.OASIS_MODEL);
@@ -38,7 +39,6 @@ async function callOllamaGenerate(prompt: string): Promise<string | null> {
       body: JSON.stringify({ model: MODEL, prompt, stream: false, options: { temperature: TEMP, num_ctx: NUM_CTX } })
     });
     const j: any = await r.json();
-    // /api/generate suele devolver { response: "..." }
     return j?.response ?? null;
   } catch { return null; }
 }
@@ -49,32 +49,37 @@ function naiveSummary(t: string): string {
   return picks.map(x => `• ${x.trim()}`).join('\n');
 }
 
-function buildFeaturesPrompt(transcript: string) {
+function buildCodesPrompt(transcript: string) {
   return `
-Extract OASIS-E1 Section G FEATURES from the transcript. Return ONLY JSON with EXACT keys and allowed values:
+You are coding OASIS-E1 Section G (M1800–M1860).
+Return ONLY JSON with EXACT keys and allowed values. Evidence must be a SHORT quote from the transcript.
 
 {
-  "M1800": {"status":"unaided|setup_only|assist|dependent", "evidence":"..."},
-  "M1810": {"status":"unaided_full|unaided_if_laid_out|needs_help_put_on|dependent", "evidence":"..."},
-  "M1820": {"status":"unaided_full|unaided_if_laid_out|needs_help_put_on|dependent", "evidence":"..."},
-  "M1830": {"status":"independent_shower|independent_shower_with_device|intermittent_assist|presence_throughout|independent_sink_chair|assist_sink_chair|bathed_by_another", "evidence":"..."},
-  "M1840": {"status":"independent|reminded_assisted_supervised|bedside_commode|bedpan_urinal_independent|dependent", "evidence":"..."},
-  "M1850": {"status":"independent|minimal_assist_or_device|bear_weight_pivot_cannot_transfer_self|cannot_transfer_cannot_bear_weight|bedfast_can_turn|bedfast_cannot_turn", "evidence":"..."},
-  "M1860": {"status":"independent_no_device|independent_one_handed_device|two_handed_device_or_supervision_stairs|needs_supervision_all_times|wheelchair_independent|wheelchair_dependent|bedfast", "evidence":"..."},
-  "notes": "...",
+  "M1800":{"value":"0|1|2|3|unknown","evidence":"..."},
+  "M1810":{"value":"0|1|2|3|unknown","evidence":"..."},
+  "M1820":{"value":"0|1|2|3|unknown","evidence":"..."},
+  "M1830":{"value":"0|1|2|3|4|5|6|unknown","evidence":"..."},
+  "M1840":{"value":"0|1|2|3|4|unknown","evidence":"..."},
+  "M1850":{"value":"0|1|2|3|4|5|unknown","evidence":"..."},
+  "M1860":{"value":"0|1|2|3|4|5|6|unknown","evidence":"..."},
   "confidence": 0.0-1.0
 }
 
 Rules:
-- Choose ONE status per item that best matches the transcript.
-- Evidence must be a short quote from the transcript justifying the status.
-- If missing or contradictory, omit "status".
-- JSON only. No prose.
+- Use the official CMS definitions (summarized).
+- If there is no explicit textual evidence for an item, set "value":"unknown".
+- Evidence MUST be a verbatim quote (snippet) from the transcript.
+- JSON only. No extra text.
+
+Examples:
+"Uses bedside commode" → M1840="2", evidence:"uses a bedside commode"
+"Bathes at sink, seated, needs assistance to wash back/lower legs" → M1830="5"
+"Walks with a rolling walker and needs supervision for stairs" → M1860="2"
 
 Transcript:
-"""${transcript}"""
-`;
+"""${transcript}"""`;
 }
+
 
 function cleanupJsonFence(s: string) {
   return s.trim().replace(/^```json\s*/i,'').replace(/```$/,'').trim();
@@ -116,7 +121,6 @@ function heuristicFill(o: any, tRaw: string) {
   const HAS = (re: RegExp) => re.test(t);
   const QUOTE = (re: RegExp, def?: string) => (t.match(re)?.[0] || def);
 
-  // patrones útiles (dotall con [\s\S]*)
   const DEPENDS = /(depends entirely|totally dependent)/;
   const BEDFAST = /bedfast/;
 
@@ -252,35 +256,20 @@ function backfillFeaturesWithRegex(f: OasisFeatures, raw: string): OasisFeatures
 }
 
 
-export async function extractOasis(transcript: string): Promise<{ oasis: OasisExtraction; summary: string; meta: any }> {
-  // 1) resumen breve (ya te funcionaba, pero dejo fallback por si acaso)
-  const sumPrompt = `Summarize in 5–7 bullet points (context, ADLs, devices, distances, risks). Plain text bullets.\n\n"""${transcript}"""`;
-  const sum1 = await callChat(sumPrompt);
-  const sum2 = sum1 ?? await callGenerate(sumPrompt);
-  const summary = (sum2 && sum2.trim().length) ? sum2.trim() : naiveSummary(transcript);
+export async function extractOasis(transcript: string) {
+  const summary = await summarizeBullets(transcript); // LLM + fallback local
+  const { codes: llmCodes, tried, model, runs } = await getCodesViaLLM(transcript); // tu función LLM
+  const { merged, provenance } = reconcileAndFallback(llmCodes, transcript);
 
-  // 2) extracción JSON con prompt alineado
-  const prompt = buildFeaturesPrompt(transcript);
-  let raw = await callChat(prompt) ?? await callGenerate(prompt);
-  let features: OasisFeatures | null = null;
-
-  if (raw) {
-    const cleaned = cleanupJsonFence(raw);
-    try {
-      const obj = JSON.parse(cleaned);
-      const z = OasisFeaturesSchema.safeParse(obj);
-      if (z.success) features = z.data;
-    } catch {}
-  }
-
-  // Fallback: si no hay features, crea uno vacío
-  if (!features) {
-    features = {
-      M1800:{}, M1810:{}, M1820:{}, M1830:{}, M1840:{}, M1850:{}, M1860:{}, confidence: 0.3
-    };
-  }
-  features = backfillFeaturesWithRegex(features, transcript);
-  const oasis = mapToCodes(features);
-
-  return { oasis, summary, meta: { model: MODEL, promptVersion: 'v2' } };
+  return {
+    oasis: merged,
+    summary,
+    meta: {
+      mode: 'llm+rules',
+      model,
+      llmRuns: tried,
+      llmVotes: runs?.length ?? 0,
+      sources: provenance
+    }
+  };
 }

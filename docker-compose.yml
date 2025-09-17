@@ -7,5 +7,18 @@ services:
       POSTGRES_DB: scribe
     ports: ["5433:5432"]
     volumes: [ "pg-data:/var/lib/postgresql/data" ]
+  ollama:
+    image: ollama/ollama:0.3.12
+    container_name: ollama
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama:/root/.ollama
+    environment:
+      - OLLAMA_MODELS=/root/.ollama 
+    networks:
+      - default
+
 volumes:
   pg-data: {}
+  ollama: {}

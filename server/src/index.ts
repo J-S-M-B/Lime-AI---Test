@@ -1,6 +1,7 @@
 import { Prisma, PrismaClient } from '@prisma/client';
 import cors from 'cors';
 import 'dotenv/config';
+import type { Request, Response } from 'express';
 import express from 'express';
 import fs from 'fs';
 import multer from 'multer';
@@ -118,14 +119,32 @@ app.post('/api/debug/transcribe-upload', memUpload.single('audio'), async (req, 
   }
 });
 
-// server/src/index.ts
-app.get('/api/debug/extract-from-note', async (req, res) => {
-  const id = req.query.id as string;
-  if (!id) return res.status(400).json({ error: 'id required' });
-  const note = await prisma.note.findUnique({ where: { id } });
-  if (!note) return res.status(404).json({ error: 'note not found' });
-  const { oasis, summary, meta } = await extractOasis(note.transcriptRaw);
-  return res.json({ oasis, summary, meta });
-});
+app.get('/api/notes/:id', async (req: Request, res: Response) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ error: 'missing id' });
 
+    const note = await prisma.note.findUnique({
+      where: { id },
+      include: { patient: true },
+    });
+
+    if (!note) return res.status(404).json({ error: 'note not found' });
+
+    res.json({
+      id: note.id,
+      patientId: note.patientId,
+      audioUrl: note.audioUrl,
+      transcriptRaw: note.transcriptRaw,
+      summary: note.summary,
+      oasisG: note.oasisG,
+      extractionMeta: note.extractionMeta ?? null,
+      createdAt: note.createdAt,
+      patient: note.patient,
+    });
+  } catch (err: any) {
+    console.error('GET /api/notes/:id error:', err?.message || err);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
 

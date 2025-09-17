@@ -20,7 +20,7 @@ async function trySdk(u8: Uint8Array, model: string) {
   try {
     const resp: any = await dg.listen.prerecorded.transcribeFile(u8 as any, {
       model,
-      language: 'en-US',          // fuerza inglés
+      language: 'en-US',
       smart_format: true,
       punctuate: true,
     });
@@ -42,7 +42,6 @@ async function tryRest(buffer: Buffer, mimetype: string, model: string) {
         Authorization: `Token ${process.env.DEEPGRAM_API_KEY!}`,
         'Content-Type': mimetype || 'application/octet-stream',
       },
-      // evita compresión rara
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
       validateStatus: () => true,
@@ -63,15 +62,12 @@ export async function transcribeFile(filePath: string): Promise<string> {
   const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   const mimetype = String(lookup(filePath) || 'audio/wav');
 
-  // 1) SDK con modelo principal
   let r = await trySdk(u8, 'nova-2');
   if (r.transcript) return r.transcript;
 
-  // 2) SDK con fallback
   r = await trySdk(u8, 'whisper');
   if (r.transcript) return r.transcript;
 
-  // 3) REST con axios (más permisivo con tipos)
   r = await tryRest(buf, mimetype, 'nova-2');
   if (r.transcript) return r.transcript;
 

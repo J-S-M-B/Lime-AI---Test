@@ -55,8 +55,8 @@ export const M1850Feat = z.object({
 export const M1860Feat = z.object({
   status: z.enum([
     'independent_no_device',
-    'independent_one_handed_device',          // cane, single crutch, hemi-walker
-    'two_handed_device_or_supervision_stairs',// walker/crutches OR human supervision/assist for stairs/uneven
+    'independent_one_handed_device',
+    'two_handed_device_or_supervision_stairs',
     'needs_supervision_all_times',
     'wheelchair_independent',
     'wheelchair_dependent',
@@ -73,7 +73,7 @@ export const OasisFeaturesSchema = z.object({
   M1840: M1840Feat,
   M1850: M1850Feat,
   M1860: M1860Feat,
-  notes: z.string().optional(),         // opcional para info adicional
+  notes: z.string().optional(),
   confidence: z.number().min(0).max(1).optional()
 });
 
