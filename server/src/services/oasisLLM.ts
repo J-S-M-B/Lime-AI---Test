@@ -156,7 +156,7 @@ async function callChatJSON(model: string, prompt: string, seed: number, withFor
 
 // ---------- Main API  ----------
 export async function getCodesViaLLM(transcript: string): Promise<LLMResult> {
-  const MODEL = process.env.OASIS_MODEL ?? 'llama3.1';
+  const MODEL = String(process.env.OASIS_MODEL);
   const model = await resolveModelName();
   const prompt = buildCodesPrompt(transcript);
   const seeds = [11, 23, 37];

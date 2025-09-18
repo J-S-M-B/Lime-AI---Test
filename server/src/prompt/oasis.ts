@@ -1,8 +1,5 @@
 export function buildCodesPrompt(transcript: string) {
   return `
-You are coding OASIS-E1 Section G (M1800–M1860) from a home health assessment transcript.
-
-Return ONLY JSON with EXACT keys. If no explicit evidence, set "value":"unknown".
 Schema:
 {
   "M1800":{"value":"0|1|2|3|unknown","evidence":"..."},
@@ -23,10 +20,6 @@ Coding reminders (condensed CMS intent):
 - M1840 Toilet transferring: 0 independent (devices allowed, e.g., grab bars); 1 reminded/assisted/**requires supervision**; 2 bedside commode; 3 bedpan/urinal independently; 4 totally dependent.
 - M1850 Transfers bed↔chair: 0 independent; 1 minimal assist or device; 2 bears weight & pivots but cannot transfer self; 3 cannot transfer & cannot bear weight; 4 bedfast can turn; 5 bedfast cannot turn.
 - M1860 Ambulation: 0 independent no device; 1 one-handed device (cane/hemi-walker); 2 two-handed device (walker/crutches) OR human supervision/cues for stairs/uneven; 3 supervision at all times; 4 wheelchair independent; 5 wheelchair dependent; 6 bedfast.
-
-Constraints:
-- Evidence is a short verbatim quote if available; if not present in the transcript, keep "unknown".
-- Output JSON ONLY. No prose.
 
 Transcript:
 """${transcript}"""

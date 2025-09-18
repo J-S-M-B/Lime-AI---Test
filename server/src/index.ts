@@ -1,5 +1,6 @@
 import { Prisma, PrismaClient } from '@prisma/client';
 import cors from 'cors';
+import * as dotenv from 'dotenv';
 import 'dotenv/config';
 import type { Request, Response } from 'express';
 import express from 'express';
@@ -9,7 +10,7 @@ import path from 'path';
 import { transcribeFile } from './services/deepgram';
 import { extractOasis } from './services/extractOasis';
 
-
+dotenv.config();
 const app = express();
 const prisma = new PrismaClient();
 

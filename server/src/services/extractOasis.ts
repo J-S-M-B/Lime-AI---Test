@@ -1,8 +1,119 @@
+import { InferenceClient } from '@huggingface/inference';
 import { OasisFeatures } from '../lib/oasisFeatures';
 import { getCodesViaLLM } from '../services/oasisLLM';
 import { reconcileAndFallback } from '../services/osasisReconcile';
 import { summarizeBullets } from '../services/summary';
 
+class HuggingFaceService {
+  private hf: InferenceClient;
+  private model: string;
+
+  constructor() {
+    this.hf = new InferenceClient(process.env.HUGGINGFACE_API_KEY);
+    this.model = String(process.env.HF_MODEL);
+  }
+
+  async generateText(prompt: string): Promise<string> {
+    try {
+      console.log(`[HF] Using conversational model: ${this.model}`);
+      
+      const response = await this.hf.chatCompletion({
+        model: this.model,
+        messages: [
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        parameters: {
+          max_tokens: 5000,
+          temperature: 0.1,
+          top_p: 0.9,
+          repetition_penalty: 1.1
+        }
+      });
+
+      const generatedText = response.choices[0]?.message?.content?.trim() || '';
+      console.log(`[HF] Response received: ${generatedText.substring(0, 100)}...`);
+      return generatedText;
+
+    } catch (error: any) {
+      console.error('[HF] Chat completion error:', error.message);
+      throw new Error(`Hugging Face API error: ${error.message}`);
+    }
+  }
+
+  async extractOasisData(transcript: string): Promise<any> {
+  const shortTranscript = transcript.length > 1500 
+    ? transcript.substring(0, 1500) + '...' 
+    : transcript;
+
+  const prompt = `Analyze this clinical transcript and extract OASIS Section G codes. 
+    Return ONLY valid JSON with the exact structure below. For each item, provide:
+    - "value": Use specific codes (0,1,2,3,4,5,6) NOT "unknown"
+    - "evidence": Exact quotes from text supporting the code choice
+
+    TRANSCRIPT:
+    ${shortTranscript}
+
+    Return ONLY this JSON structure:
+    {
+      "M1800": {"value": "0|1|2|3", "evidence": "specific text quote"},
+      "M1810": {"value": "0|1|2|3", "evidence": "specific text quote"},
+      "M1820": {"value": "0|1|2|3", "evidence": "specific text quote"},
+      "M1830": {"value": "0|1|2|3|4|5|6", "evidence": "specific text quote"},
+      "M1840": {"value": "0|1|2|3|4", "evidence": "specific text quote"},
+      "M1850": {"value": "0|1|2|3|4|5", "evidence": "specific text quote"},
+      "M1860": {"value": "0|1|2|3|4|5|6", "evidence": "specific text quote"}
+    }
+
+    Coding guidelines:
+    - M1800 Grooming: 0=Independent, 1=Setup help, 2=Assistance, 3=Dependent
+    - M1810 Upper dressing: 0=Independent, 1=Setup help, 2=Assistance, 3=Dependent
+    - M1820 Lower dressing: 0=Independent, 1=Setup help, 2=Assistance, 3=Dependent
+    - M1830 Bathing: 0=Independent shower, 1=Devices, 2=Intermittent assist, 3=Constant assist, 4=Independent sink, 5=Assist sink, 6=Total assist
+    - M1840 Toilet transferring: 0=Independent, 1=Supervision, 2=Commode, 3=Bedpan, 4=Dependent
+    - M1850 Bed/chair transfers: 0=Independent, 1=Minimal assist, 2=Weight bear+pivot, 3=No transfer, 4=Bedfast turns, 5=Bedfast no turn
+    - M1860 Ambulation: 0=Independent no device, 1=One-handed device, 2=Two-handed device, 3=Constant supervision, 4=Wheelchair independent, 5=Wheelchair dependent, 6=Bedfast
+
+    IMPORTANT: Use specific codes, NOT "unknown". Find evidence in the text.`;
+
+  try {
+    const response = await this.generateText(prompt);
+    console.log('[HF] OASIS response:', response.substring(0, 300) + '...');
+    
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsedData = JSON.parse(jsonMatch[0]);
+        
+        const allUnknown = Object.values(parsedData).every((item: any) => 
+          item.value === 'unknown' || item.value === ''
+        );
+        
+        if (allUnknown) {
+          throw new Error('All values are unknown');
+        }
+        
+        return parsedData;
+      }
+      throw new Error('No JSON found in response');
+      
+    } catch (parseError: unknown) {
+      const err = parseError as Error;
+      console.error('[HF] JSON parse error:', err.message);
+      throw new Error('Failed to parse OASIS data from response');
+    }
+
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error('[HF] OASIS extraction error:', err.message);
+    throw err;
+  }
+}
+}
+
+const huggingFaceService = new HuggingFaceService();
 const OLLAMA_URL = String(process.env.OLLAMA_URL);
 const MODEL = String(process.env.OASIS_MODEL);
 const NUM_CTX = Number(process.env.OLLAMA_NUM_CTX);
@@ -49,38 +160,6 @@ function naiveSummary(t: string): string {
   return picks.map(x => `• ${x.trim()}`).join('\n');
 }
 
-function buildCodesPrompt(transcript: string) {
-  return `
-You are coding OASIS-E1 Section G (M1800–M1860).
-Return ONLY JSON with EXACT keys and allowed values. Evidence must be a SHORT quote from the transcript.
-
-{
-  "M1800":{"value":"0|1|2|3|unknown","evidence":"..."},
-  "M1810":{"value":"0|1|2|3|unknown","evidence":"..."},
-  "M1820":{"value":"0|1|2|3|unknown","evidence":"..."},
-  "M1830":{"value":"0|1|2|3|4|5|6|unknown","evidence":"..."},
-  "M1840":{"value":"0|1|2|3|4|unknown","evidence":"..."},
-  "M1850":{"value":"0|1|2|3|4|5|unknown","evidence":"..."},
-  "M1860":{"value":"0|1|2|3|4|5|6|unknown","evidence":"..."},
-  "confidence": 0.0-1.0
-}
-
-Rules:
-- Use the official CMS definitions (summarized).
-- If there is no explicit textual evidence for an item, set "value":"unknown".
-- Evidence MUST be a verbatim quote (snippet) from the transcript.
-- JSON only. No extra text.
-
-Examples:
-"Uses bedside commode" → M1840="2", evidence:"uses a bedside commode"
-"Bathes at sink, seated, needs assistance to wash back/lower legs" → M1830="5"
-"Walks with a rolling walker and needs supervision for stairs" → M1860="2"
-
-Transcript:
-"""${transcript}"""`;
-}
-
-
 function cleanupJsonFence(s: string) {
   return s.trim().replace(/^```json\s*/i,'').replace(/```$/,'').trim();
 }
@@ -124,7 +203,6 @@ function heuristicFill(o: any, tRaw: string) {
   const DEPENDS = /(depends entirely|totally dependent)/;
   const BEDFAST = /bedfast/;
 
-  // M1800 Grooming
   if (o.M1800.value === 'unknown') {
     if (HAS(new RegExp(`groom(ing)?[\\s\\S]*${DEPENDS.source}`)) || HAS(new RegExp(`${DEPENDS.source}[\\s\\S]*groom`))) {
       o.M1800.value = '3';
@@ -132,7 +210,6 @@ function heuristicFill(o: any, tRaw: string) {
     }
   }
 
-  // M1810 Upper-body dressing
   if (o.M1810.value === 'unknown') {
     if (HAS(/upper[^.]*totally dependent/) || HAS(/for both upper[^.]*totally dependent/) || HAS(/upper[^.]*depends entirely/)) {
       o.M1810.value = '3';
@@ -140,7 +217,6 @@ function heuristicFill(o: any, tRaw: string) {
     }
   }
 
-  // M1820 Lower-body dressing
   if (o.M1820.value === 'unknown') {
     if (HAS(/lower[^.]*totally dependent/) || HAS(/for both[^.]*lower[^.]*totally dependent/) || HAS(/lower[^.]*depends entirely/)) {
       o.M1820.value = '3';
@@ -148,7 +224,6 @@ function heuristicFill(o: any, tRaw: string) {
     }
   }
 
-  // M1830 Bathing
   if (o.M1830.value === 'unknown') {
     if (HAS(/bathed entirely by another person/)) {
       o.M1830.value = '6';
@@ -159,7 +234,6 @@ function heuristicFill(o: any, tRaw: string) {
     }
   }
 
-  // M1840 Toilet transferring
   if (o.M1840.value === 'unknown') {
     if (HAS(/totally dependent[^.]*toilet transfer|toilet transfers?[^.]*totally dependent/)) {
       o.M1840.value = '4';
@@ -167,10 +241,9 @@ function heuristicFill(o: any, tRaw: string) {
     }
   }
 
-  // M1850 Transferring
   if (o.M1850.value === 'unknown') {
     if (HAS(new RegExp(`${BEDFAST.source}[\\s\\S]*unable to transfer[\\s\\S]*unable to turn|unable to turn[\\s\\S]*${BEDFAST.source}`))) {
-      o.M1850.value = '5'; // bedfast, no transfiere ni gira
+      o.M1850.value = '5';
       o.M1850.evidence ||= 'bedfast, unable to transfer and unable to turn or position self';
     } else if (HAS(/bear weight.*pivot.*cannot transfer/)) {
       o.M1850.value = '2';
@@ -178,7 +251,6 @@ function heuristicFill(o: any, tRaw: string) {
     }
   }
 
-  // M1860 Ambulation/locomotion
   if (o.M1860.value === 'unknown') {
     if (HAS(BEDFAST)) {
       o.M1860.value = '6';
@@ -198,7 +270,6 @@ function backfillFeaturesWithRegex(f: OasisFeatures, raw: string): OasisFeatures
   const has = (re: RegExp) => re.test(t);
   const quote = (re: RegExp) => t.match(re)?.[0];
 
-  // M1800
   if (!f.M1800?.status) {
     if (has(/groom(ing)?.*(no physical help|independent)/)) f.M1800 = { status:'unaided', evidence: quote(/groom[^.]*?(no physical help|independent)/) };
     else if (has(/groom(ing)?.*(after setup|within reach)/)) f.M1800 = { status:'setup_only', evidence: quote(/groom[^.]*?(after setup|within reach)/) };
@@ -206,7 +277,6 @@ function backfillFeaturesWithRegex(f: OasisFeatures, raw: string): OasisFeatures
     else if (has(/(depends entirely|totally dependent)[^.]*groom|groom[^.]*?(depends entirely|totally dependent)/)) f.M1800 = { status:'dependent', evidence: 'totally dependent for grooming' };
   }
 
-  // M1810/M1820
   const fillDress = (cur:any, upper:boolean) => {
     if (cur?.status) return cur;
     const tag = upper ? 'upper' : 'lower';
@@ -219,7 +289,6 @@ function backfillFeaturesWithRegex(f: OasisFeatures, raw: string): OasisFeatures
   f.M1810 = fillDress(f.M1810, true);
   f.M1820 = fillDress(f.M1820, false);
 
-  // M1830
   if (!f.M1830?.status) {
     if (has(/bathed entirely by another person/)) f.M1830 = { status:'bathed_by_another', evidence:'bathed entirely by another person' };
     else if (has(/presence throughout/)) f.M1830 = { status:'presence_throughout', evidence:'presence throughout' };
@@ -229,7 +298,6 @@ function backfillFeaturesWithRegex(f: OasisFeatures, raw: string): OasisFeatures
       f.M1830 = { status:'intermittent_assist', evidence: quote(/contact guard[^.]*?(step in|step out|in and out)/) };
   }
 
-  // M1840
   if (!f.M1840?.status) {
     if (has(/bedside commode/)) f.M1840 = { status:'bedside_commode', evidence:'uses bedside commode' };
     else if (has(/(reminded|assisted|supervised).*toilet transfers?|toilet transfers?.*(reminded|assisted|supervised)/))
@@ -238,14 +306,12 @@ function backfillFeaturesWithRegex(f: OasisFeatures, raw: string): OasisFeatures
       f.M1840 = { status:'dependent', evidence: 'totally dependent for toilet transfers' };
   }
 
-  // M1850
   if (!f.M1850?.status) {
     if (has(/bedfast/) && has(/unable to transfer/) && has(/unable to turn/)) f.M1850 = { status:'bedfast_cannot_turn', evidence:'bedfast, unable to transfer and to turn' };
     else if (has(/bear weight.*pivot.*cannot (complete )?transfer/)) f.M1850 = { status:'bear_weight_pivot_cannot_transfer_self', evidence: quote(/bear weight[^.]*pivot[^.]*cannot (complete )?transfer/) };
     else if (has(/minimal assistance.*(transfer|bed to chair|chair to bed)/)) f.M1850 = { status:'minimal_assist_or_device', evidence: quote(/minimal assistance[^.]*?(transfer|bed to chair|chair to bed)/) };
   }
 
-  // M1860
   if (!f.M1860?.status) {
     if (has(/bedfast/)) f.M1860 = { status:'bedfast', evidence:'bedfast' };
     else if (has(/with a cane|one-handed device/)) f.M1860 = { status:'independent_one_handed_device', evidence: quote(/with a cane|one-handed device/) };
@@ -255,21 +321,37 @@ function backfillFeaturesWithRegex(f: OasisFeatures, raw: string): OasisFeatures
   return f;
 }
 
-
 export async function extractOasis(transcript: string) {
-  const summary = await summarizeBullets(transcript); // LLM + fallback local
-  const { codes: llmCodes, tried, model, runs } = await getCodesViaLLM(transcript); // tu función LLM
-  const { merged, provenance } = reconcileAndFallback(llmCodes, transcript);
+  try {
+    const oasisData = await huggingFaceService.extractOasisData(transcript);
+    const summary = await summarizeBullets(transcript);
+    
+    return {
+      oasis: oasisData,
+      summary,
+      meta: {
+        mode: 'huggingface',
+        model: process.env.HF_MODEL,
+        llmRuns: 1,
+        llmVotes: 1,
+        sources: ['huggingface']
+      }
+    };
+  } catch (error) {
+    const { codes: llmCodes, tried, model, runs } = await getCodesViaLLM(transcript); 
+    const { merged, provenance } = reconcileAndFallback(llmCodes, transcript);
+    const summary = await summarizeBullets(transcript);
 
-  return {
-    oasis: merged,
-    summary,
-    meta: {
-      mode: 'llm+rules',
-      model,
-      llmRuns: tried,
-      llmVotes: runs?.length ?? 0,
-      sources: provenance
-    }
-  };
+    return {
+      oasis: merged,
+      summary,
+      meta: {
+        mode: 'llm+rules',
+        model,
+        llmRuns: tried,
+        llmVotes: runs?.length ?? 0,
+        sources: provenance
+      }
+    };
+  }
 }

@@ -14,6 +14,7 @@
   "license": "ISC",
   "dependencies": {
     "@deepgram/sdk": "^4.11.2",
+    "@huggingface/inference": "^4.8.0",
     "@prisma/client": "^6.16.1",
     "axios": "^1.12.2",
     "cors": "^2.8.5",

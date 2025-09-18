@@ -1,7 +1,10 @@
+import { huggingFaceService } from '../services/huggingface';
+
 const OLLAMA_URL = process.env.OLLAMA_URL;
 const SUMMARY_MODEL = process.env.OASIS_MODEL;
 const TEMP = Number(process.env.OLLAMA_TEMP ?? 0.2);
 const NUM_CTX = Number(process.env.OLLAMA_NUM_CTX ?? 8192);
+
 
 // --- Utilities ---
 function toBullets(lines: string[]): string {
@@ -9,8 +12,8 @@ function toBullets(lines: string[]): string {
     .map(s => s.trim())
     .filter(Boolean)
     .map(s => {
-      if (s.startsWith('- ') || s.startsWith('* ')) return '• ' + s.slice(2).trim();
-      return '• ' + s;
+      if (s.startsWith('- ') || s.startsWith('* ')) return '' + s.slice(2).trim();
+      return '' + s;
     });
 
   const max = Math.min(7, Math.max(5, cleaned.length));
@@ -140,11 +143,39 @@ function heuristicBullets(tRaw: string): string {
   return toBullets(bullets);
 }
 
-// --- LLM (Ollama) ---
-async function ollamaBullets(transcript: string): Promise<string | null> {
+// --- LLM from HuggingFace ---
+async function huggingFaceBullets(transcript: string): Promise<string> {
   try {
-    const prompt = `Summarize the encounter in 5–7 bullet points covering: grooming, dressing (upper/lower), bathing, toilet transfers, bed/chair transfers, ambulation/locomotion; include assistive devices, assistance levels, distances, and risks. 
+    const prompt = `Summarize the encounter in 1 line, not more than 25 words.
 Return PLAIN TEXT bullets (each line begins with "• "), no JSON, no headings.
+
+"""${transcript.substring(0, 3000)}"""`; 
+
+    const content = await huggingFaceService.generateText(prompt);
+    
+    if (!content || typeof content !== 'string') return '';
+
+    // Cleaning and normalization
+    const cleaned = content
+      .replace(/^```(?:markdown|md)?\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
+
+    const lines = cleaned.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (!lines.length) return '';
+
+    return toBullets(lines);
+  } catch (error) {
+    console.error('Hugging Face bullets error:', error);
+    return '';
+  }
+}
+
+// --- LLM Ollama ---
+async function ollamaBullets(transcript: string): Promise<string> {
+  try {
+    const prompt = `Summarize the encounter in 2-3 bullet points covering: grooming, dressing (upper/lower), bathing, toilet transfers, bed/chair transfers, ambulation/locomotion; include assistive devices, assistance levels, distances, and risks. 
+Return PLAIN TEXT bullets , no JSON, no headings.
 
 """${transcript}"""`;
 
@@ -163,7 +194,7 @@ Return PLAIN TEXT bullets (each line begins with "• "), no JSON, no headings.
     });
     const j: any = await r.json();
     const content: string = j?.message?.content ?? j?.response ?? '';
-    if (!content || typeof content !== 'string') return null;
+    if (!content || typeof content !== 'string') return '';
 
     // Cleaning and normalization
     const cleaned = content
@@ -172,16 +203,19 @@ Return PLAIN TEXT bullets (each line begins with "• "), no JSON, no headings.
       .trim();
 
     const lines = cleaned.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-    if (!lines.length) return null;
+    if (!lines.length) return '';
 
     return toBullets(lines);
   } catch {
-    return null;
+    return '';
   }
 }
 
 // --- Main API  ---
 export async function summarizeBullets(transcript: string): Promise<string> {
+  const hfResult = await huggingFaceBullets(transcript);
+  if (hfResult && hfResult.trim()) return hfResult;
+
   const llm = await ollamaBullets(transcript);
   if (llm && llm.trim()) return llm;
 

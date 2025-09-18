@@ -24,7 +24,6 @@ export async function hasModel(model: string): Promise<boolean> {
 export async function ensureModel(model: string): Promise<void> {
   try {
     if (await hasModel(model)) return;
-    // dispara el pull (puede tardar; no esperamos a que termine)
     await fetch(`${OLLAMA_URL}/api/pull`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
